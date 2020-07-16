@@ -1,26 +1,65 @@
-# encoding: UTF-8
-
 module Mysql2
   class Error < StandardError
-    REPLACEMENT_CHAR = '?'
-    ENCODE_OPTS      = {:undef => :replace, :invalid => :replace, :replace => REPLACEMENT_CHAR}
+    ENCODE_OPTS = {
+      undef: :replace,
+      invalid: :replace,
+      replace: '?'.freeze,
+    }.freeze
 
-    attr_accessor :error_number
-    attr_reader   :sql_state
-    attr_writer   :server_version
+    ConnectionError = Class.new(Error)
+    TimeoutError = Class.new(Error)
+
+    CODES = {
+      1205 => TimeoutError, # ER_LOCK_WAIT_TIMEOUT
+
+      1044 => ConnectionError, # ER_DBACCESS_DENIED_ERROR
+      1045 => ConnectionError, # ER_ACCESS_DENIED_ERROR
+      1152 => ConnectionError, # ER_ABORTING_CONNECTION
+      1153 => ConnectionError, # ER_NET_PACKET_TOO_LARGE
+      1154 => ConnectionError, # ER_NET_READ_ERROR_FROM_PIPE
+      1155 => ConnectionError, # ER_NET_FCNTL_ERROR
+      1156 => ConnectionError, # ER_NET_PACKETS_OUT_OF_ORDER
+      1157 => ConnectionError, # ER_NET_UNCOMPRESS_ERROR
+      1158 => ConnectionError, # ER_NET_READ_ERROR
+      1159 => ConnectionError, # ER_NET_READ_INTERRUPTED
+      1160 => ConnectionError, # ER_NET_ERROR_ON_WRITE
+      1161 => ConnectionError, # ER_NET_WRITE_INTERRUPTED
+
+      2001 => ConnectionError, # CR_SOCKET_CREATE_ERROR
+      2002 => ConnectionError, # CR_CONNECTION_ERROR
+      2003 => ConnectionError, # CR_CONN_HOST_ERROR
+      2004 => ConnectionError, # CR_IPSOCK_ERROR
+      2005 => ConnectionError, # CR_UNKNOWN_HOST
+      2006 => ConnectionError, # CR_SERVER_GONE_ERROR
+      2007 => ConnectionError, # CR_VERSION_ERROR
+      2009 => ConnectionError, # CR_WRONG_HOST_INFO
+      2012 => ConnectionError, # CR_SERVER_HANDSHAKE_ERR
+      2013 => ConnectionError, # CR_SERVER_LOST
+      2020 => ConnectionError, # CR_NET_PACKET_TOO_LARGE
+      2026 => ConnectionError, # CR_SSL_CONNECTION_ERROR
+      2027 => ConnectionError, # CR_MALFORMED_PACKET
+      2047 => ConnectionError, # CR_CONN_UNKNOW_PROTOCOL
+      2048 => ConnectionError, # CR_INVALID_CONN_HANDLE
+      2049 => ConnectionError, # CR_UNUSED_1
+    }.freeze
+
+    attr_reader :error_number, :sql_state
 
     # Mysql gem compatibility
-    alias_method :errno, :error_number
-    alias_method :error, :message
+    alias errno error_number
+    alias error message
 
-    def initialize(msg, server_version=nil)
-      self.server_version = server_version
+    def initialize(msg, server_version = nil, error_number = nil, sql_state = nil)
+      @server_version = server_version
+      @error_number = error_number
+      @sql_state = sql_state ? sql_state.encode(**ENCODE_OPTS) : nil
 
-      super(mysql2_clean_message(msg))
+      super(clean_message(msg))
     end
 
-    def sql_state=(state)
-      @sql_state = ''.respond_to?(:encode) ? state.encode(ENCODE_OPTS) : state
+    def self.new_with_args(msg, server_version, error_number, sql_state)
+      error_class = CODES.fetch(error_number, self)
+      error_class.new(msg, server_version, error_number, sql_state)
     end
 
     private
@@ -30,7 +69,7 @@ module Mysql2
     # variable.
     #
     # See http://dev.mysql.com/doc/refman/5.5/en/charset-errors.html for
-    # more contetx.
+    # more context.
     #
     # Before MySQL 5.5 error message template strings are in whatever encoding
     # is associated with the error message language.
@@ -49,33 +88,12 @@ module Mysql2
     # encoding, we'll assume UTF-8 and clean the string of anything that's not a
     # valid UTF-8 character.
     #
-    # Except for if we're on 1.8, where we'll do nothing ;)
-    #
-    # Returns a valid UTF-8 string in Ruby 1.9+, the original string on Ruby 1.8
-    
-    # the name `mysql2_clean_message` is used to avoid conflict with `clean_message` method in activesupport 2.3
-    def mysql2_clean_message(message)
-      return message if !message.respond_to?(:encoding)
-
+    # Returns a valid UTF-8 string.
+    def clean_message(message)
       if @server_version && @server_version > 50500
-        message.encode(ENCODE_OPTS)
+        message.encode(**ENCODE_OPTS)
       else
-        if message.respond_to? :scrub
-          message.scrub(REPLACEMENT_CHAR).encode(ENCODE_OPTS)
-        else
-          # This is ugly as hell but Ruby 1.9 doesn't provide a way to clean a string
-          # and retain it's valid UTF-8 characters, that I know of.
-
-          new_message = "".force_encoding(Encoding::UTF_8)
-          message.chars.each do |char|
-            if char.valid_encoding?
-              new_message << char
-            else
-              new_message << REPLACEMENT_CHAR
-            end
-          end
-          new_message.encode(ENCODE_OPTS)
-        end
+        message.encode(Encoding::UTF_8, **ENCODE_OPTS)
       end
     end
   end
